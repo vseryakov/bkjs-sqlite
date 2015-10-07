@@ -290,7 +290,7 @@ void SQLiteDatabase::Init(Handle<Object> target)
     Nan::SetPrototypeMethod(t, "querySync", QuerySync);
     Nan::SetPrototypeMethod(t, "copy", Copy);
     constructor.Reset(t->GetFunction());
-    target->Set(Nan::New("SQLiteDatabase").ToLocalChecked(), t->GetFunction());
+    target->Set(Nan::New("Database").ToLocalChecked(), t->GetFunction());
 }
 
 static bool BindParameters(Row &params, sqlite3_stmt *stmt)
@@ -939,7 +939,7 @@ void SQLiteStatement::Init(Handle<Object> target)
     Nan::SetPrototypeMethod(t, "next", Next);
     Nan::SetPrototypeMethod(t, "finalize", Finalize);
     constructor.Reset(t->GetFunction());
-    target->Set(Nan::New("SQLiteStatement").ToLocalChecked(), t->GetFunction());
+    target->Set(Nan::New("Statement").ToLocalChecked(), t->GetFunction());
 
     // For statements created within database, All, Run
     object_template = Persistent<ObjectTemplate>::New(ObjectTemplate::New());

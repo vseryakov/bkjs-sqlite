@@ -5,7 +5,7 @@
 ```javascript
   var sqlite = require("bkjs-sqlite");
 
-  var db = new sqlite.SQLiteDatabase("test.db", sqlite.SQLITE_OPEN_CREATE, function(err) {
+  var db = new sqlite.Database("test.db", sqlite.SQLITE_OPEN_CREATE, function(err) {
      if (err) console.log(err);
 
      this.runSync("PRAGMA cache_size=5000");
@@ -16,13 +16,14 @@
   });
 ```
 
-## SQLiteDatabase
-- `new SQLiteDatabase(filename, options, callback)` - create new database object,
+## Database class
+- `new Database(filename, options, callback)` - create new database object,
   the callback will be called with an Error if occured.
-- Methods:
+- Properties:
   - `open` - return 1 if the db is open
   - `affected_rows` - returns number of rows affected by the last operation
   - `inserted_oid` - last auto generated ID
+- Methods:
   - `exec(sql[, callback])` - execute the SQL statememt in a worker thread
   - `run(sql, [values], [callback])` - execute a DDL statement in a worker thread, supports
      parameters in the statement
@@ -34,8 +35,8 @@
   - `closeSync()` - close the database in the main thread
   - `copy(db2)` - copy currently open database into another, db2 can be an open db object or a file name
 
-## SQLiteStatement
-- `new SQLiteStatement(db, sql, callback)` - create new SQL statement object for a database and SQL statement, a callback
+## Statement class
+- `new Statement(db, sql, callback)` - create new SQL statement object for a database and SQL statement, a callback
    will be called with an error if occured, otherwise prepared statement is ready for execution
 - Methods:
   - `prepare(sql, [callback])` - prepare another SQL statement in the existing statement object
