@@ -8,7 +8,6 @@
 #define _BK_SQLITE_H_
 
 #include "bklib.h"
-#include "bklog.h"
 #include "sqlite3.h"
 
 // Database intitalization

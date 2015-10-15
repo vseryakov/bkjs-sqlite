@@ -39,7 +39,6 @@
         "bklib/bkjs.cpp",
         "bklib/bksqlite.cpp",
         "bklib/bklib.cpp",
-        "bklib/bklog.cpp",
         "sqlite/sqlite3.c",
       ],
       "conditions": [

@@ -6,13 +6,6 @@
 #include "bksqlite.h"
 #include "bkregexp.h"
 
-// Convenience function to enable logging
-static void sqliteLogger(sqlite3_context *ctx, int argc, sqlite3_value **argv)
-{
-    if (argc > 0) bkLog::set((const char*)sqlite3_value_text(argv[0]));
-    sqlite3_result_int(ctx, bkLog::level());
-}
-
 // Implementaton of the REGEXP function
 static void sqliteRegexp(sqlite3_context *ctx, int argc, sqlite3_value **argv)
 {
@@ -202,7 +195,7 @@ static void sqliteArray(sqlite3_context *ctx, int argc, sqlite3_value **argv)
     if (!sep || !sep[0]) sep = ",";
     if (!op || !op[0]) op = "add";
 
-    vector<string> items = strSplit(data ? data : "", sep);
+    vector<string> items = bkStrSplit(data ? data : "", sep);
     if (!strcmp(op, "add") || !strcmp(op, "set")) {
         if (op[0] == 's') items.clear();
         for (int i = 3; i < argc; i++) {
@@ -222,7 +215,7 @@ static void sqliteArray(sqlite3_context *ctx, int argc, sqlite3_value **argv)
     if (!strcmp(op, "clear")) {
         items.clear();
     }
-    sqlite3_result_text(ctx, toString(items, sep).c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_result_text(ctx, bkToString(items, sep).c_str(), -1, SQLITE_TRANSIENT);
 }
 
 // Public interface to sqlite functions
@@ -244,7 +237,6 @@ bool bkSqliteInitDb(sqlite3 *handle, int (*progress)(void *))
     sqlite3_create_function(handle, "busy_timeout", 1, SQLITE_UTF8, 0, sqliteTimeout, 0, 0);
     sqlite3_create_function(handle, "mnow", 0, SQLITE_UTF8, 0, sqliteMNow, 0, 0);
     sqlite3_create_function(handle, "now", 0, SQLITE_UTF8, 0, sqliteNow, 0, 0);
-    sqlite3_create_function(handle, "logger", 1, SQLITE_UTF8, 0, sqliteLogger, 0, 0);
     sqlite3_create_function(handle, "rank_bm25", -1, SQLITE_UTF8, 0, sqliteRankBM25, 0, 0);
     sqlite3_progress_handler(handle, 1500, progress, NULL);
 

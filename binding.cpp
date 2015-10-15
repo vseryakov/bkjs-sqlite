@@ -250,7 +250,7 @@ void SQLiteInit(Handle<Object> target)
 
 NODE_MODULE(binding, SQLiteInit);
 
-static NAN_METHOD(sqliteStats)
+static NAN_METHOD(stats)
 {
     Nan::HandleScope scope;
     Local<Array> keys = Array::New();
@@ -272,7 +272,7 @@ void SQLiteDatabase::Init(Handle<Object> target)
 {
     Nan::HandleScope scope;
 
-    NAN_EXPORT(target, sqliteStats);
+    NAN_EXPORT(target, stats);
 
     v8::Local<v8::FunctionTemplate> t = Nan::New<v8::FunctionTemplate>(New);
     t->SetClassName(Nan::New("SQLiteDatabase").ToLocalChecked());
