@@ -9,8 +9,9 @@
      if (err) console.log(err);
 
      this.runSync("PRAGMA cache_size=5000");
+     this.runSync("CREATE TABLE test(a int, b text)")
 
-     this.query("SELECT name FROM sqlite_master WHERE type='?'", ["table"], function(err, tables) {
+     this.query("SELECT name FROM sqlite_master WHERE type=?", ["table"], function(err, tables) {
         console.log(err, tables);
      });
   });
@@ -50,7 +51,7 @@
     as opposed to the `query` which will retrievs all records in the memory.
   - `finalize()` - close and free the statement, it cannot be used anymore and will be deleted eventually
 
-# Author 
+# Author
 
 Vlad Seryakov
 
