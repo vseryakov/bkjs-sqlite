@@ -37,8 +37,8 @@
       "target_name": "binding",
       "sources": [
         "binding.cpp",
-        "bklib/bkjs.cpp",
         "bklib/bksqlite.cpp",
+        "bklib/bkregexp.cpp",
         "bklib/bklib.cpp",
         "sqlite/sqlite3.c",
       ],

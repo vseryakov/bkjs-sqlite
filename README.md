@@ -45,10 +45,6 @@
   - `runSync()` - execute prepared DDL statememnt in the main thread
   - `query([values], [callback])` - execute prepared statement with values for the parameters, if callback is given it will be passed the results
   - `querySync([values])` - execute prepared statement with values for the parameters in the main thread
-  - `each([values],onrow, oncomplete)` - start iterating over the results for the prepared statement, onrow callback
-    will be called for each row, to move to the next row `this.next()` must be called. Once all rows are processed and oncomplete
-    callback is given it will be called. This is for going over huge amounts of records, each step will retrieve only one record
-    as opposed to the `query` which will retrieve all records in the memory.
   - `finalize()` - close and free the statement, it cannot be used anymore and will be deleted eventually
 
 # Author

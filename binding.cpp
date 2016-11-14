@@ -6,10 +6,8 @@
 #include "bkjs.h"
 #include "bksqlite.h"
 
-#define SQLITE_JSON 99
-
 #define EXCEPTION(msg, errno, name) \
-        Local<Value> name = Exception::Error(Nan::New(bkFmtStr("%d: %s", errno, msg).c_str()).ToLocalChecked()); \
+        Local<Value> name = Exception::Error(Nan::New(bkFmtStr("%d: %s", errno, msg)).ToLocalChecked()); \
         Local<Object> name ##_obj = name->ToObject(); \
         name ##_obj->Set(Nan::New("errno").ToLocalChecked(), Nan::New(errno)); \
         name ##_obj->Set(Nan::New("code").ToLocalChecked(), Nan::New(sqlite_code_string(errno)).ToLocalChecked());
@@ -31,13 +29,37 @@ static map<SQLiteStatement*,bool> _stmts;
 
 class SQLiteDatabase: public Nan::ObjectWrap {
 public:
-    static Nan::Persistent<v8::Function> constructor;
-    static void Init(Handle<Object> target);
+    static NAN_MODULE_INIT(Init) {
+        Local<FunctionTemplate> tpl = Nan::New<FunctionTemplate>(NewDB);
+        tpl->SetClassName(Nan::New("SQLiteDatabase").ToLocalChecked());
+        tpl->InstanceTemplate()->SetInternalFieldCount(1);
+
+        Nan::SetAccessor(tpl->InstanceTemplate(), Nan::New("open").ToLocalChecked(), OpenGetter);
+        Nan::SetAccessor(tpl->InstanceTemplate(), Nan::New("inserted_oid").ToLocalChecked(), InsertedOidGetter);
+        Nan::SetAccessor(tpl->InstanceTemplate(), Nan::New("affected_rows").ToLocalChecked(), AffectedRowsGetter);
+
+        Nan::SetPrototypeMethod(tpl, "close", Close);
+        Nan::SetPrototypeMethod(tpl, "closeSync", CloseSync);
+        Nan::SetPrototypeMethod(tpl, "exec", Exec);
+        Nan::SetPrototypeMethod(tpl, "run", Run);
+        Nan::SetPrototypeMethod(tpl, "runSync", RunSync);
+        Nan::SetPrototypeMethod(tpl, "query", Query);
+        Nan::SetPrototypeMethod(tpl, "querySync", QuerySync);
+        Nan::SetPrototypeMethod(tpl, "copy", Copy);
+
+        constructor().Reset(Nan::GetFunction(tpl).ToLocalChecked());
+        Nan::Set(target, Nan::New("Database").ToLocalChecked(), Nan::GetFunction(tpl).ToLocalChecked());
+    }
+
+    static inline Nan::Persistent<Function> & constructor() {
+        static Nan::Persistent<Function> _constructor;
+        return _constructor;
+    }
 
     struct Baton {
         uv_work_t request;
         SQLiteDatabase* db;
-        Persistent<Function> callback;
+        Nan::Persistent<Function> callback;
         int status;
         string message;
         string sparam;
@@ -45,14 +67,14 @@ public:
         sqlite3_int64 inserted_id;
         int changes;
 
-        Baton(SQLiteDatabase* db_, Handle<Function> cb_, string s = "", int i = 0): db(db_), status(SQLITE_OK), sparam(s), iparam(i) {
+        Baton(SQLiteDatabase* db_, Local<Function> cb_, string s = "", int i = 0): db(db_), status(SQLITE_OK), sparam(s), iparam(i) {
             db->Ref();
             request.data = this;
-            if (!cb_.IsEmpty()) callback = Persistent < Function > ::New(cb_);
+            if (!cb_.IsEmpty()) callback.Reset(cb_);
         }
         virtual ~Baton() {
             db->Unref();
-            if (!callback.IsEmpty()) callback.Dispose();
+            callback.Reset();
         }
     };
 
@@ -61,14 +83,10 @@ public:
     SQLiteDatabase() : Nan::ObjectWrap(), _handle(NULL), timeout(500), retries(2) {}
     virtual ~SQLiteDatabase() { sqlite3_close_v2(_handle); }
 
-    static NAN_METHOD(New);
-    static NAN_GETTER(OpenGetter1);
-    static NAN_GETTER(InsertedOidGetter1);
-    static NAN_GETTER(AffectedRowsGetter1);
-    static Handle<Value> OpenGetter(Local<String> str, const AccessorInfo& accessor);
-    static Handle<Value> InsertedOidGetter(Local<String> str, const AccessorInfo& accessor);
-    static Handle<Value> AffectedRowsGetter(Local<String> str, const AccessorInfo& accessor);
-
+    static NAN_METHOD(NewDB);
+    static NAN_GETTER(OpenGetter);
+    static NAN_GETTER(InsertedOidGetter);
+    static NAN_GETTER(AffectedRowsGetter);
 
     static void Work_Open(uv_work_t* req);
     static void Work_AfterOpen(uv_work_t* req);
@@ -92,43 +110,64 @@ public:
     int retries;
 };
 
+static Nan::Persistent<ObjectTemplate> _tpl;
+
 class SQLiteStatement: public Nan::ObjectWrap {
 public:
-    static Nan::Persistent<v8::Function> constructor;
-    static Persistent<ObjectTemplate> object_template;
+    static NAN_MODULE_INIT(Init) {
+        Local<FunctionTemplate> tpl = Nan::New<FunctionTemplate>(NewStmt);
+        tpl->SetClassName(Nan::New("SQLiteStatement").ToLocalChecked());
+        tpl->InstanceTemplate()->SetInternalFieldCount(1);
 
-    static void Init(Handle<Object> target);
-    static NAN_METHOD(New);
-    static NAN_GETTER(SqlGetter);
+        Nan::SetPrototypeMethod(tpl, "prepare", Prepare);
+        Nan::SetPrototypeMethod(tpl, "run", Run);
+        Nan::SetPrototypeMethod(tpl, "runSync", RunSync);
+        Nan::SetPrototypeMethod(tpl, "query", Query);
+        Nan::SetPrototypeMethod(tpl, "querySync", QuerySync);
+        Nan::SetPrototypeMethod(tpl, "finalize", Finalize);
 
-    static Handle<Object> Create(SQLiteDatabase *db, string sql = string()) {
-        Local<Object> obj = object_template->NewInstance();
+        constructor().Reset(Nan::GetFunction(tpl).ToLocalChecked());
+        Nan::Set(target, Nan::New("Statement").ToLocalChecked(), Nan::GetFunction(tpl).ToLocalChecked());
+
+        Local<ObjectTemplate> t = Nan::New<ObjectTemplate>();
+        t->SetInternalFieldCount(1);
+        _tpl.Reset(t);
+    }
+
+    static inline Nan::Persistent<Function> & constructor() {
+        static Nan::Persistent<Function> _constructor;
+        return _constructor;
+    }
+    static NAN_METHOD(NewStmt);
+
+    static Local<Object> Create(SQLiteDatabase *db, string sql = string()) {
+        Nan::EscapableHandleScope scope;
+        Local<ObjectTemplate> t = Nan::New(_tpl);
+        Local<Object> obj = Nan::NewInstance(t).ToLocalChecked();
         SQLiteStatement* stmt = new SQLiteStatement(db, sql);
-        obj->SetInternalField(0, External::New(stmt));
+        obj->SetInternalField(0, Nan::New(stmt));
         stmt->Wrap(obj);
-        return obj;
+        return scope.Escape(obj);
     }
 
     struct Baton {
         uv_work_t request;
         SQLiteStatement* stmt;
-        Persistent<Function> callback;
-        Persistent<Function> completed;
+        Nan::Persistent<Function> callback;
         Row params;
         vector<Row> rows;
         sqlite3_int64 inserted_id;
         int changes;
         string sql;
 
-        Baton(SQLiteStatement* stmt_, Handle<Function> cb_): stmt(stmt_), inserted_id(0), changes(0), sql(stmt->sql)  {
+        Baton(SQLiteStatement* stmt_, Local<Function> cb_): stmt(stmt_), inserted_id(0), changes(0), sql(stmt->sql)  {
             stmt->Ref();
             request.data = this;
-            if (!cb_.IsEmpty()) callback = Persistent < Function > ::New(cb_);
+            if (!cb_.IsEmpty()) callback.Reset(cb_);
         }
         virtual ~Baton() {
             stmt->Unref();
-            if (!callback.IsEmpty()) callback.Dispose();
-            if (!completed.IsEmpty()) completed.Dispose();
+            callback.Reset();
         }
     };
 
@@ -179,13 +218,6 @@ public:
     static void Work_QueryPrepare(uv_work_t* req);
     static void Work_AfterQuery(uv_work_t* req);
 
-    static NAN_METHOD(Each);
-    static void Work_Each(uv_work_t* req);
-    static void Work_EachNext(uv_work_t* req);
-    static void Work_AfterEach(uv_work_t* req);
-    static NAN_METHOD(Next);
-    void Next(void);
-
     SQLiteDatabase* db;
     sqlite3_stmt* _handle;
     string sql;
@@ -195,13 +227,29 @@ public:
     Baton *each;
 };
 
-Nan::Persistent<v8::Function> SQLiteDatabase::constructor;
-Nan::Persistent<v8::Function> SQLiteStatement::constructor;
-Persistent<ObjectTemplate> SQLiteStatement::object_template;
-
-void SQLiteInit(Handle<Object> target)
+NAN_METHOD(stats)
 {
     Nan::HandleScope scope;
+    Local<Array> keys = Nan::New<Array>();
+    map<SQLiteStatement*,bool>::const_iterator it = _stmts.begin();
+    int i = 0;
+    while (it != _stmts.end()) {
+        Local<Object> obj = Nan::New<Object>();
+        obj->Set(Nan::New("op").ToLocalChecked(), Nan::New(it->first->op.c_str()).ToLocalChecked());
+        obj->Set(Nan::New("sql").ToLocalChecked(), Nan::New(it->first->sql.c_str()).ToLocalChecked());
+        obj->Set(Nan::New("prepared").ToLocalChecked(), Nan::New(it->first->_handle != NULL));
+        keys->Set(Nan::New(i), obj);
+        it++;
+        i++;
+    }
+    NAN_RETURN(keys);
+}
+
+NAN_MODULE_INIT(SqliteInit)
+{
+    Nan::HandleScope scope;
+
+    NAN_EXPORT(target, stats);
 
     SQLiteDatabase::Init(target);
     SQLiteStatement::Init(target);
@@ -248,50 +296,7 @@ void SQLiteInit(Handle<Object> target)
     NAN_DEFINE_CONSTANT_INTEGER(target, SQLITE_NOTADB, NOTADB);
 }
 
-NODE_MODULE(binding, SQLiteInit);
-
-static NAN_METHOD(stats)
-{
-    Nan::HandleScope scope;
-    Local<Array> keys = Array::New();
-    map<SQLiteStatement*,bool>::const_iterator it = _stmts.begin();
-    int i = 0;
-    while (it != _stmts.end()) {
-        Local<Object> obj = Local<Object>::New(Object::New());
-        obj->Set(Nan::New("op").ToLocalChecked(), Nan::New(it->first->op.c_str()).ToLocalChecked());
-        obj->Set(Nan::New("sql").ToLocalChecked(), Nan::New(it->first->sql.c_str()).ToLocalChecked());
-        obj->Set(Nan::New("prepared").ToLocalChecked(), Nan::New(it->first->_handle != NULL));
-        keys->Set(Nan::New(i), obj);
-        it++;
-        i++;
-    }
-    NAN_RETURN(keys);
-}
-
-void SQLiteDatabase::Init(Handle<Object> target)
-{
-    Nan::HandleScope scope;
-
-    NAN_EXPORT(target, stats);
-
-    v8::Local<v8::FunctionTemplate> t = Nan::New<v8::FunctionTemplate>(New);
-    t->SetClassName(Nan::New("SQLiteDatabase").ToLocalChecked());
-    t->InstanceTemplate()->SetInternalFieldCount(1);
-    t->InstanceTemplate()->SetAccessor(Nan::New("open").ToLocalChecked(), OpenGetter);
-    t->InstanceTemplate()->SetAccessor(Nan::New("inserted_oid").ToLocalChecked(), InsertedOidGetter);
-    t->InstanceTemplate()->SetAccessor(Nan::New("affected_rows").ToLocalChecked(), AffectedRowsGetter);
-
-    Nan::SetPrototypeMethod(t, "close", Close);
-    Nan::SetPrototypeMethod(t, "closeSync", CloseSync);
-    Nan::SetPrototypeMethod(t, "exec", Exec);
-    Nan::SetPrototypeMethod(t, "run", Run);
-    Nan::SetPrototypeMethod(t, "runSync", RunSync);
-    Nan::SetPrototypeMethod(t, "query", Query);
-    Nan::SetPrototypeMethod(t, "querySync", QuerySync);
-    Nan::SetPrototypeMethod(t, "copy", Copy);
-    constructor.Reset(t->GetFunction());
-    target->Set(Nan::New("Database").ToLocalChecked(), t->GetFunction());
-}
+NODE_MODULE(binding, SqliteInit);
 
 static bool BindParameters(Row &params, sqlite3_stmt *stmt)
 {
@@ -356,9 +361,6 @@ static bool ParseParameters(Row &params, const Nan::FunctionCallbackInfo<v8::Val
         if (source->IsDate()) {
             params.push_back(SQLiteField(pos, SQLITE_FLOAT, source->NumberValue()));
         } else
-        if (source->IsObject()) {
-            params.push_back(SQLiteField(pos, SQLITE_TEXT, 0, stringifyJSON(source)));
-        } else
         if (source->IsUndefined()) {
             params.push_back(SQLiteField(pos));
         }
@@ -377,7 +379,7 @@ static void GetRow(Row &row, sqlite3_stmt* stmt)
         const char* dtype = sqlite3_column_decltype(stmt, i);
         const char* text;
 
-        if (dtype && !strcasecmp(dtype, "json")) type = SQLITE_JSON;
+        if (dtype && !strcasecmp(dtype, "json")) type = SQLITE_TEXT;
         switch (type) {
         case SQLITE_INTEGER:
             row.push_back(SQLiteField(name, type, sqlite3_column_int64(stmt, i)));
@@ -386,7 +388,6 @@ static void GetRow(Row &row, sqlite3_stmt* stmt)
             row.push_back(SQLiteField(name, type, sqlite3_column_double(stmt, i)));
             break;
         case SQLITE_TEXT:
-        case SQLITE_JSON:
             text = (const char*) sqlite3_column_text(stmt, i);
             row.push_back(SQLiteField(name, type, 0, string(text, length)));
             break;
@@ -405,38 +406,31 @@ static Local<Object> GetRow(sqlite3_stmt *stmt)
 {
     Nan::EscapableHandleScope scope;
 
-    Local<Object> obj(Object::New());
+    Local<Object> obj = Nan::New<Object>();
     int cols = sqlite3_column_count(stmt);
     for (int i = 0; i < cols; i++) {
         int type = sqlite3_column_type(stmt, i);
         int length = sqlite3_column_bytes(stmt, i);
         const char* name = sqlite3_column_name(stmt, i);
         const char* dtype = sqlite3_column_decltype(stmt, i);
-        const char* text;
         Local<Value> value;
-        Buffer *buffer;
 
-        if (dtype && !strcasecmp(dtype, "json")) type = SQLITE_JSON;
+        if (dtype && !strcasecmp(dtype, "json")) type = SQLITE_TEXT;
         switch (type) {
         case SQLITE_INTEGER:
-            value = Local<Value>(Local<Number>::New(Number::New(sqlite3_column_int64(stmt, i))));
+            value = Nan::New((double)sqlite3_column_int64(stmt, i));
             break;
         case SQLITE_FLOAT:
-            value = Local<Value>(Local<Number>::New(Number::New(sqlite3_column_double(stmt, i))));
+            value = Nan::New(sqlite3_column_double(stmt, i));
             break;
         case SQLITE_TEXT:
-            value = Local<Value>(Local<String>::New(String::New((const char*) sqlite3_column_text(stmt, i))));
-            break;
-        case SQLITE_JSON:
-            value = Local<Value>::New(parseJSON((const char*)sqlite3_column_text(stmt, i)));
+            value = Nan::New((const char*)sqlite3_column_text(stmt, i)).ToLocalChecked();
             break;
         case SQLITE_BLOB:
-            text = (const char*)sqlite3_column_blob(stmt, i);
-            buffer = Buffer::New(text, length);
-            value = Local<Value>::New(buffer->handle_);
+            value = Nan::CopyBuffer((const char*)sqlite3_column_blob(stmt, i), length).ToLocalChecked();
             break;
         case SQLITE_NULL:
-            value = Local<Value>::New(Null());
+            value = Nan::Null();
             break;
         }
         obj->Set(Nan::New(name).ToLocalChecked(), value);
@@ -448,33 +442,28 @@ static Local<Object> RowToJS(Row &row)
 {
     Nan::EscapableHandleScope scope;
 
-    Local<Object> result(Object::New());
+    Local<Object> result = Nan::New<Object>();
     for (uint i = 0; i < row.size(); i++) {
         SQLiteField &field = row[i];
-        Buffer *buffer;
         Local<Value> value;
         switch (field.type) {
-        case SQLITE_JSON:
-            value = Local<Value>::New(parseJSON(field.svalue.c_str()));
-            break;
         case SQLITE_INTEGER:
-            value = Local<Value>(Local<Number>::New(Number::New(field.nvalue)));
+            value = Nan::New(field.nvalue);
             break;
         case SQLITE_FLOAT:
-            value = Local<Value>(Local<Number>::New(Number::New(field.nvalue)));
+            value = Nan::New(field.nvalue);
             break;
         case SQLITE_TEXT:
-            value = Local<Value>(Local<String>::New(String::New(field.svalue.c_str(), field.svalue.size())));
+            value = Nan::New(field.svalue).ToLocalChecked();
             break;
         case SQLITE_BLOB:
-            buffer = Buffer::New(field.svalue.c_str(), field.svalue.size());
-            value = Local<Value>::New(buffer->handle_);
+            value = Nan::CopyBuffer((const char*)field.svalue.c_str(), field.svalue.size()).ToLocalChecked();
             break;
         case SQLITE_NULL:
-            value = Local<Value>::New(Null());
+            value = Nan::Null();
             break;
         }
-        result->Set(Nan::New(field.name.c_str()).ToLocalChecked(), value);
+        result->Set(Nan::New(field.name).ToLocalChecked(), value);
     }
     row.clear();
     return scope.Escape(result);
@@ -546,49 +535,25 @@ static const char* sqlite_code_string(int code)
     }
 }
 
-Handle<Value> SQLiteDatabase::OpenGetter(Local<String> str, const AccessorInfo& accessor)
+NAN_GETTER(SQLiteDatabase::OpenGetter)
 {
-    HandleScope scope;
-    SQLiteDatabase* db = ObjectWrap::Unwrap < SQLiteDatabase > (accessor.This());
-    return scope.Close(Boolean::New(db->_handle != NULL));
-}
-
-Handle<Value> SQLiteDatabase::InsertedOidGetter(Local<String> str, const AccessorInfo& accessor)
-{
-    HandleScope scope;
-    SQLiteDatabase* db = ObjectWrap::Unwrap < SQLiteDatabase > (accessor.This());
-    return scope.Close(Integer::New(sqlite3_last_insert_rowid(db->_handle)));
-}
-
-Handle<Value> SQLiteDatabase::AffectedRowsGetter(Local<String> str, const AccessorInfo& accessor)
-{
-    HandleScope scope;
-    SQLiteDatabase* db = ObjectWrap::Unwrap < SQLiteDatabase > (accessor.This());
-    return scope.Close(Integer::New(sqlite3_changes(db->_handle)));
-}
-
-NAN_GETTER(SQLiteDatabase::OpenGetter1)
-{
-    Nan::HandleScope scope;
-    SQLiteDatabase* db = ObjectWrap::Unwrap < SQLiteDatabase > (info.Holder());
+    SQLiteDatabase* db = ObjectWrap::Unwrap < SQLiteDatabase > (info.This());
     NAN_RETURN(Nan::New(db->_handle != NULL));
 }
 
-NAN_GETTER(SQLiteDatabase::InsertedOidGetter1)
+NAN_GETTER(SQLiteDatabase::InsertedOidGetter)
 {
-    Nan::HandleScope scope;
-    SQLiteDatabase* db = ObjectWrap::Unwrap < SQLiteDatabase > (info.Holder());
+    SQLiteDatabase* db = ObjectWrap::Unwrap < SQLiteDatabase > (info.This());
     NAN_RETURN(Nan::New((double)sqlite3_last_insert_rowid(db->_handle)));
 }
 
-NAN_GETTER(SQLiteDatabase::AffectedRowsGetter1)
+NAN_GETTER(SQLiteDatabase::AffectedRowsGetter)
 {
-    Nan::HandleScope scope;
-    SQLiteDatabase* db = ObjectWrap::Unwrap < SQLiteDatabase > (info.Holder());
+    SQLiteDatabase* db = ObjectWrap::Unwrap < SQLiteDatabase > (info.This());
     NAN_RETURN(Nan::New(sqlite3_changes(db->_handle)));
 }
 
-NAN_METHOD(SQLiteDatabase::New)
+NAN_METHOD(SQLiteDatabase::NewDB)
 {
     Nan::HandleScope scope;
 
@@ -610,8 +575,8 @@ NAN_METHOD(SQLiteDatabase::New)
 
     SQLiteDatabase* db = new SQLiteDatabase();
     db->Wrap(info.This());
-    info.This()->Set(Nan::New("name").ToLocalChecked(), info[0]->ToString(), ReadOnly);
-    info.This()->Set(Nan::New("mode").ToLocalChecked(), Nan::New(mode), ReadOnly);
+    Nan::Set(info.This(), Nan::New("name").ToLocalChecked(), Nan::New(*filename).ToLocalChecked());
+    Nan::Set(info.This(), Nan::New("mode").ToLocalChecked(), Nan::New(mode));
 
     if (!callback.IsEmpty()) {
         Baton* baton = new Baton(db, callback, *filename, mode);
@@ -647,15 +612,16 @@ void SQLiteDatabase::Work_AfterOpen(uv_work_t* req)
     Nan::HandleScope scope;
     Baton* baton = static_cast<Baton*>(req->data);
 
-    if (!baton->callback.IsEmpty() && baton->callback->IsFunction()) {
+    if (!baton->callback.IsEmpty()) {
         Local < Value > argv[1];
+        Local<Function> cb = Nan::New(baton->callback);
         if (baton->status != SQLITE_OK) {
             EXCEPTION(baton->message.c_str(), baton->status, exception);
             argv[0] = exception;
         } else {
-            argv[0] = Local < Value > ::New(Null());
+            argv[0] = Nan::Null();
         }
-        NAN_TRY_CATCH_CALL(baton->db->handle(), baton->callback, 1, argv);
+        NAN_TRY_CATCH_CALL(baton->db->handle(), cb, 1, argv);
     } else
     if (baton->status != SQLITE_OK) {
         LogError("%s", baton->message.c_str());
@@ -705,15 +671,16 @@ void SQLiteDatabase::Work_AfterClose(uv_work_t* req)
     Nan::HandleScope scope;
     Baton* baton = static_cast<Baton*>(req->data);
 
-    if (!baton->callback.IsEmpty() && baton->callback->IsFunction()) {
+    if (!baton->callback.IsEmpty()) {
         Local < Value > argv[1];
+        Local<Function> cb = Nan::New(baton->callback);
         if (baton->status != SQLITE_OK) {
             EXCEPTION(baton->message.c_str(), baton->status, exception);
             argv[0] = exception;
         } else {
-            argv[0] = Local < Value > ::New(Null());
+            argv[0] = Nan::Null();
         }
-        NAN_TRY_CATCH_CALL(baton->db->handle(), baton->callback, 1, argv);
+        NAN_TRY_CATCH_CALL(Nan::GetCurrentContext()->Global(), cb, 1, argv);
     } else
     if (baton->status != SQLITE_OK) {
         LogError("%s", baton->message.c_str());
@@ -738,7 +705,7 @@ NAN_METHOD(SQLiteDatabase::QuerySync)
 
     int n = 0;
     string message;
-    Local<Array> result(Array::New());
+    Local<Array> result = Nan::New<Array>();
     if (BindParameters(params, stmt)) {
         while ((status = sqlite3_step(stmt)) == SQLITE_ROW) {
             Local<Object> obj(GetRow(stmt));
@@ -800,7 +767,7 @@ NAN_METHOD(SQLiteDatabase::Run)
     NAN_REQUIRE_ARGUMENT_STRING(0, sql);
     NAN_OPTIONAL_ARGUMENT_FUNCTION(-1, callback);
 
-    Local<Object> obj = Local<Object>::New(SQLiteStatement::Create(db, *sql));
+    Local<Object> obj = SQLiteStatement::Create(db, *sql);
     SQLiteStatement* stmt = ObjectWrap::Unwrap < SQLiteStatement > (obj);
     SQLiteStatement::Baton* baton = new SQLiteStatement::Baton(stmt, callback);
     ParseParameters(baton->params, info, 1);
@@ -817,7 +784,7 @@ NAN_METHOD(SQLiteDatabase::Query)
     NAN_REQUIRE_ARGUMENT_STRING(0, sql);
     NAN_OPTIONAL_ARGUMENT_FUNCTION(-1, callback);
 
-    Local<Object> obj = Local<Object>::New(SQLiteStatement::Create(db, *sql));
+    Local<Object> obj = SQLiteStatement::Create(db, *sql);
     SQLiteStatement* stmt = ObjectWrap::Unwrap < SQLiteStatement > (obj);
     SQLiteStatement::Baton* baton = new SQLiteStatement::Baton(stmt, callback);
     ParseParameters(baton->params, info, 1);
@@ -863,15 +830,16 @@ void SQLiteDatabase::Work_AfterExec(uv_work_t* req)
     baton->db->handle()->Set(Nan::New("inserted_oid").ToLocalChecked(), Nan::New((double)baton->inserted_id));
     baton->db->handle()->Set(Nan::New("affected_rows").ToLocalChecked(), Nan::New(baton->changes));
 
-    if (!baton->callback.IsEmpty() && baton->callback->IsFunction()) {
+    if (!baton->callback.IsEmpty()) {
         Local < Value > argv[1];
+        Local<Function> cb = Nan::New(baton->callback);
         if (baton->status != SQLITE_OK) {
             EXCEPTION(baton->message.c_str(), baton->status, exception);
             argv[0] = exception;
         } else {
-            argv[0] = Local < Value > ::New(Null());
+            argv[0] = Nan::Null();
         }
-        NAN_TRY_CATCH_CALL(baton->db->handle(), baton->callback, 1, argv);
+        NAN_TRY_CATCH_CALL(baton->db->handle(), cb, 1, argv);
     } else
     if (baton->status != SQLITE_OK) {
         LogError("%s", baton->message.c_str());
@@ -922,32 +890,8 @@ NAN_METHOD(SQLiteDatabase::Copy)
     NAN_RETURN(info.Holder());
 }
 
-void SQLiteStatement::Init(Handle<Object> target)
-{
-    Nan::HandleScope scope;
-
-    v8::Local<v8::FunctionTemplate> t = Nan::New<v8::FunctionTemplate>(New);
-    t->SetClassName(Nan::New("SQLiteStatement").ToLocalChecked());
-    t->InstanceTemplate()->SetInternalFieldCount(1);
-
-    Nan::SetPrototypeMethod(t, "prepare", Prepare);
-    Nan::SetPrototypeMethod(t, "run", Run);
-    Nan::SetPrototypeMethod(t, "runSync", RunSync);
-    Nan::SetPrototypeMethod(t, "query", Query);
-    Nan::SetPrototypeMethod(t, "querySync", QuerySync);
-    Nan::SetPrototypeMethod(t, "each", Each);
-    Nan::SetPrototypeMethod(t, "next", Next);
-    Nan::SetPrototypeMethod(t, "finalize", Finalize);
-    constructor.Reset(t->GetFunction());
-    target->Set(Nan::New("Statement").ToLocalChecked(), t->GetFunction());
-
-    // For statements created within database, All, Run
-    object_template = Persistent<ObjectTemplate>::New(ObjectTemplate::New());
-    object_template->SetInternalFieldCount(1);
-}
-
 // { Database db, String sql, Function callback }
-NAN_METHOD(SQLiteStatement::New)
+NAN_METHOD(SQLiteStatement::NewStmt)
 {
     Nan::HandleScope scope;
 
@@ -959,8 +903,8 @@ NAN_METHOD(SQLiteStatement::New)
 
     SQLiteDatabase* db = ObjectWrap::Unwrap < SQLiteDatabase > (info[0]->ToObject());
     SQLiteStatement* stmt = new SQLiteStatement(db, *sql);
-    stmt->Wrap(info.Holder());
-    info.Holder()->Set(Nan::New("sql").ToLocalChecked(), Nan::New(*sql).ToLocalChecked(), ReadOnly);
+    stmt->Wrap(info.This());
+    Nan::Set(info.This(), Nan::New("sql").ToLocalChecked(), Nan::New(*sql).ToLocalChecked());
     stmt->op = "new";
     Baton* baton = new Baton(stmt, callback);
     uv_queue_work(uv_default_loop(), &baton->request, Work_Prepare, (uv_after_work_cb)Work_AfterPrepare);
@@ -995,15 +939,16 @@ void SQLiteStatement::Work_AfterPrepare(uv_work_t* req)
     Nan::HandleScope scope;
     Baton* baton = static_cast<Baton*>(req->data);
 
-    if (!baton->callback.IsEmpty() && baton->callback->IsFunction()) {
+    if (!baton->callback.IsEmpty()) {
         Local < Value > argv[1];
+        Local<Function> cb = Nan::New(baton->callback);
         if (baton->stmt->status != SQLITE_OK) {
             EXCEPTION(baton->stmt->message.c_str(), baton->stmt->status, exception);
             argv[0] = exception;
         } else {
-            argv[0] = Local < Value > ::New(Null());
+            argv[0] = Nan::Null();
         }
-        NAN_TRY_CATCH_CALL(baton->stmt->handle(), baton->callback, 1, argv);
+        NAN_TRY_CATCH_CALL(baton->stmt->handle(), cb, 1, argv);
     } else
     if (baton->stmt->status != SQLITE_OK) {
         LogError("%s", baton->stmt->message.c_str());
@@ -1112,15 +1057,16 @@ void SQLiteStatement::Work_AfterRun(uv_work_t* req)
     baton->stmt->handle()->Set(Nan::New("lastID").ToLocalChecked(), Nan::New((double)baton->inserted_id));
     baton->stmt->handle()->Set(Nan::New("changes").ToLocalChecked(), Nan::New(baton->changes));
 
-    if (!baton->callback.IsEmpty() && baton->callback->IsFunction()) {
+    if (!baton->callback.IsEmpty()) {
         Local < Value > argv[1];
+        Local<Function> cb = Nan::New(baton->callback);
         if (baton->stmt->status != SQLITE_OK) {
             EXCEPTION(baton->stmt->message.c_str(), baton->stmt->status, exception);
             argv[0] = exception;
         } else {
-            argv[0] = Local < Value > ::New(Null());
+            argv[0] = Nan::Null();
         }
-        NAN_TRY_CATCH_CALL(baton->stmt->handle(), baton->callback, 1, argv);
+        NAN_TRY_CATCH_CALL(baton->stmt->handle(), cb, 1, argv);
     } else
     if (baton->stmt->status != SQLITE_OK) {
         LogError("%s", baton->stmt->message.c_str());
@@ -1138,7 +1084,7 @@ NAN_METHOD(SQLiteStatement::QuerySync)
     int n = 0;
     Row params;
     ParseParameters(params, info, 0);
-    Local<Array> result(Array::New());
+    Local<Array> result = Nan::New<Array>();
     stmt->op = "querySync";
 
     if (BindParameters(params, stmt->_handle)) {
@@ -1218,22 +1164,23 @@ void SQLiteStatement::Work_AfterQuery(uv_work_t* req)
     baton->stmt->handle()->Set(Nan::New("lastID").ToLocalChecked(), Nan::New((double)baton->inserted_id));
     baton->stmt->handle()->Set(Nan::New("changes").ToLocalChecked(), Nan::New(baton->changes));
 
-    if (!baton->callback.IsEmpty() && baton->callback->IsFunction()) {
+    if (!baton->callback.IsEmpty()) {
+        Local<Function> cb = Nan::New(baton->callback);
         if (baton->stmt->status != SQLITE_DONE) {
             EXCEPTION(baton->stmt->message.c_str(), baton->stmt->status, exception);
-            Local<Value> argv[] = { exception, Local<Value>::New(Array::New(0)) };
-            NAN_TRY_CATCH_CALL(baton->stmt->handle(), baton->callback, 2, argv);
+            Local<Value> argv[] = { exception, Nan::New<Array>() };
+            NAN_TRY_CATCH_CALL(baton->stmt->handle(), cb, 2, argv);
         } else
         if (baton->rows.size()) {
-            Local<Array> result(Array::New(baton->rows.size()));
+            Local<Array> result = Nan::New<Array>(baton->rows.size());
             for (uint i = 0; i < baton->rows.size(); i++) {
                 result->Set(i, RowToJS(baton->rows[i]));
             }
-            Local<Value> argv[] = { Local<Value>::New(Null()), result };
-            NAN_TRY_CATCH_CALL(baton->stmt->handle(), baton->callback, 2, argv);
+            Local<Value> argv[] = { Nan::Null(), result };
+            NAN_TRY_CATCH_CALL(baton->stmt->handle(), cb, 2, argv);
         } else {
-            Local<Value> argv[] = { Local<Value>::New(Null()), Local<Value>::New(Array::New(0)) };
-            NAN_TRY_CATCH_CALL(baton->stmt->handle(), baton->callback, 2, argv);
+            Local<Value> argv[] = { Nan::Null(), Nan::New<Array>() };
+            NAN_TRY_CATCH_CALL(baton->stmt->handle(), cb, 2, argv);
         }
     } else
     if (baton->stmt->status != SQLITE_DONE) {
@@ -1242,95 +1189,3 @@ void SQLiteStatement::Work_AfterQuery(uv_work_t* req)
     delete baton;
 }
 
-NAN_METHOD(SQLiteStatement::Each)
-{
-    Nan::HandleScope scope;
-    SQLiteStatement* stmt = ObjectWrap::Unwrap < SQLiteStatement > (info.Holder());
-
-    Local<Function> callback, completed;
-    if (info.Length() >= 3 && info[info.Length() - 1]->IsFunction() && info[info.Length() - 2]->IsFunction()) {
-        callback = Local<Function>::Cast(info[info.Length() - 2]);
-        completed = Local<Function>::Cast(info[info.Length() - 1]);
-    } else
-    if (info.Length() >= 2 && info[info.Length() - 1]->IsFunction()) {
-        callback = Local<Function>::Cast(info[info.Length() - 1]);
-    }
-    stmt->op = "each";
-    if (stmt->each) delete stmt->each;
-    stmt->each = new Baton(stmt, callback);
-    stmt->each->completed = Persistent<Function>::New(completed);
-    ParseParameters(stmt->each->params, info, 0);
-
-    uv_queue_work(uv_default_loop(), &stmt->each->request, Work_Each, (uv_after_work_cb)Work_AfterEach);
-    NAN_RETURN(info.Holder());
-}
-
-void SQLiteStatement::Next()
-{
-    Nan::HandleScope scope;
-    if (!each) return;
-
-    if (each->rows.size()) {
-        Local<Value> argv[1] = { RowToJS(each->rows[0]) };
-        each->rows.erase(each->rows.begin());
-        NAN_TRY_CATCH_CALL(handle(), each->callback, 1, argv);
-        return;
-    } else
-    if (status == SQLITE_ROW) {
-        uv_queue_work(uv_default_loop(), &each->request, Work_EachNext, (uv_after_work_cb)Work_AfterEach);
-        return;
-    }
-    // No more rows or error, run final callback
-    if (!each->completed.IsEmpty()) {
-        Local<Value> argv[1];
-        if (status != SQLITE_DONE) {
-            EXCEPTION(message.c_str(), status, exception);
-            argv[0] = exception;
-        } else {
-            argv[0] = Local<Value>::New(Null());
-        }
-        NAN_TRY_CATCH_CALL(handle(), each->completed, 1, argv);
-    }
-    delete each;
-    each = NULL;
-}
-
-NAN_METHOD(SQLiteStatement::Next)
-{
-    Nan::HandleScope scope;
-    SQLiteStatement* stmt = ObjectWrap::Unwrap < SQLiteStatement > (info.Holder());
-
-    stmt->Next();
-}
-
-void SQLiteStatement::Work_Each(uv_work_t* req)
-{
-    Baton* baton = static_cast<Baton*>(req->data);
-
-    if (BindParameters(baton->params, baton->stmt->_handle)) {
-        Work_EachNext(req);
-    } else {
-        baton->stmt->message = string(sqlite3_errmsg(baton->stmt->db->_handle));
-    }
-}
-
-void SQLiteStatement::Work_EachNext(uv_work_t* req)
-{
-    Baton* baton = static_cast<Baton*>(req->data);
-
-    while ((baton->stmt->status = bkSqliteStep(baton->stmt->_handle, baton->stmt->db->retries, baton->stmt->db->timeout)) == SQLITE_ROW) {
-        Row row;
-        GetRow(row, baton->stmt->_handle);
-        baton->rows.push_back(row);
-        if (baton->rows.size() >= 50) break;
-    }
-    if (baton->stmt->status != SQLITE_ROW && baton->stmt->status != SQLITE_DONE) {
-        baton->stmt->message = string(sqlite3_errmsg(baton->stmt->db->_handle));
-    }
-}
-
-void SQLiteStatement::Work_AfterEach(uv_work_t* req)
-{
-    Baton* baton = static_cast<Baton*>(req->data);
-    baton->stmt->Next();
-}
