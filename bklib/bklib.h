@@ -68,8 +68,14 @@
 #include <list>
 #include <map>
 #include <queue>
+
+#if defined __APPLE__ && __cplusplus < 201103L
 #include <tr1/unordered_map>
 using namespace std::tr1;
+#else
+#include <unordered_map> 
+#endif 
+
 using namespace std;
 
 // Printing messages with time and line info

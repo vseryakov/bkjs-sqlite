@@ -853,7 +853,7 @@ NAN_METHOD(SQLiteDatabase::Copy)
     SQLiteDatabase* db = ObjectWrap::Unwrap < SQLiteDatabase > (info.Holder());
     string errmsg;
     sqlite3 *handle2 = 0;
-    int rc;
+    int rc = SQLITE_OK;
 
     if (info.Length() && info[0]->IsObject()) {
         SQLiteDatabase* sdb = ObjectWrap::Unwrap < SQLiteDatabase > (info[0]->ToObject());
