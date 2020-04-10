@@ -8,9 +8,9 @@
 
 #define EXCEPTION(msg, errno, name) \
         Local<Value> name = Exception::Error(Nan::New(bkFmtStr("%d: %s", errno, msg)).ToLocalChecked()); \
-        Local<Object> name ##_obj = name->ToObject(); \
-        name ##_obj->Set(Nan::New("errno").ToLocalChecked(), Nan::New(errno)); \
-        name ##_obj->Set(Nan::New("code").ToLocalChecked(), Nan::New(sqlite_code_string(errno)).ToLocalChecked());
+        Local<Object> name ##_obj = Nan::To<Object>(name).ToLocalChecked(); \
+        Nan::Set(name ##_obj, Nan::New("errno").ToLocalChecked(), Nan::New(errno)); \
+        Nan::Set(name ##_obj, Nan::New("code").ToLocalChecked(), Nan::New(sqlite_code_string(errno)).ToLocalChecked());
 
 struct SQLiteField {
     inline SQLiteField(unsigned short _index, unsigned short _type = SQLITE_NULL, double n = 0, string s = string()): type(_type), index(_index), nvalue(n), svalue(s) {}
@@ -235,10 +235,10 @@ NAN_METHOD(stats)
     int i = 0;
     while (it != _stmts.end()) {
         Local<Object> obj = Nan::New<Object>();
-        obj->Set(Nan::New("op").ToLocalChecked(), Nan::New(it->first->op.c_str()).ToLocalChecked());
-        obj->Set(Nan::New("sql").ToLocalChecked(), Nan::New(it->first->sql.c_str()).ToLocalChecked());
-        obj->Set(Nan::New("prepared").ToLocalChecked(), Nan::New(it->first->_handle != NULL));
-        keys->Set(Nan::New(i), obj);
+        Nan::Set(obj, Nan::New("op").ToLocalChecked(), Nan::New(it->first->op.c_str()).ToLocalChecked());
+        Nan::Set(obj, Nan::New("sql").ToLocalChecked(), Nan::New(it->first->sql.c_str()).ToLocalChecked());
+        Nan::Set(obj, Nan::New("prepared").ToLocalChecked(), Nan::New(it->first->_handle != NULL));
+        Nan::Set(keys, Nan::New(i), obj);
         it++;
         i++;
     }
@@ -336,30 +336,30 @@ static bool ParseParameters(Row &params, const Nan::FunctionCallbackInfo<v8::Val
 
     Local<Array> array = Local<Array>::Cast(args[idx]);
     for (uint i = 0, pos = 1; i < array->Length(); i++, pos++) {
-        Local<Value> source = array->Get(i);
+        Local<Value> source = Nan::Get(array, i).ToLocalChecked();
 
         if (source->IsString() || source->IsRegExp()) {
-            String::Utf8Value val(source->ToString());
+            Nan::Utf8String val(Nan::To<String>(source).ToLocalChecked());
             params.push_back(SQLiteField(pos, SQLITE_TEXT, 0, string(*val, val.length())));
         } else
         if (source->IsInt32()) {
-            params.push_back(SQLiteField(pos, SQLITE_INTEGER, source->Int32Value()));
+            params.push_back(SQLiteField(pos, SQLITE_INTEGER, Nan::To<int32_t>(source).FromJust()));
         } else
         if (source->IsNumber()) {
-            params.push_back(SQLiteField(pos, SQLITE_FLOAT, source->NumberValue()));
+            params.push_back(SQLiteField(pos, SQLITE_FLOAT, Nan::To<double>(source).FromJust()));
         } else
         if (source->IsBoolean()) {
-            params.push_back(SQLiteField(pos, SQLITE_INTEGER, source->BooleanValue() ? 1 : 0));
+            params.push_back(SQLiteField(pos, SQLITE_INTEGER, Nan::To<bool>(source).FromJust() ? 1 : 0));
         } else
         if (source->IsNull()) {
             params.push_back(SQLiteField(pos));
         } else
         if (Buffer::HasInstance(source)) {
-            Local < Object > buffer = source->ToObject();
+            Local < Object > buffer = Nan::To<Object>(source).ToLocalChecked();
             params.push_back(SQLiteField(pos, SQLITE_BLOB, 0, string(Buffer::Data(buffer), Buffer::Length(buffer))));
         } else
         if (source->IsDate()) {
-            params.push_back(SQLiteField(pos, SQLITE_FLOAT, source->NumberValue()));
+            params.push_back(SQLiteField(pos, SQLITE_FLOAT, Nan::To<double>(source).FromJust()));
         } else
         if (source->IsUndefined()) {
             params.push_back(SQLiteField(pos));
@@ -433,7 +433,7 @@ static Local<Object> GetRow(sqlite3_stmt *stmt)
             value = Nan::Null();
             break;
         }
-        obj->Set(Nan::New(name).ToLocalChecked(), value);
+        Nan::Set(obj, Nan::New(name).ToLocalChecked(), value);
     }
     return scope.Escape(obj);
 }
@@ -463,7 +463,7 @@ static Local<Object> RowToJS(Row &row)
             value = Nan::Null();
             break;
         }
-        result->Set(Nan::New(field.name).ToLocalChecked(), value);
+        Nan::Set(result, Nan::New(field.name).ToLocalChecked(), value);
     }
     row.clear();
     return scope.Escape(result);
@@ -561,7 +561,7 @@ NAN_METHOD(SQLiteDatabase::NewDB)
 
     NAN_REQUIRE_ARGUMENT_STRING(0, filename);
     int arg = 1, mode = 0;
-    if (info.Length() >= arg && info[arg]->IsInt32()) mode = info[arg++]->Int32Value();
+    if (info.Length() >= arg && info[arg]->IsInt32()) mode = Nan::To<int32_t>(info[arg++]).FromJust();
 
     Local < Function > callback;
     if (info.Length() >= arg && info[arg]->IsFunction()) callback = Local < Function > ::Cast(info[arg]);
@@ -709,7 +709,7 @@ NAN_METHOD(SQLiteDatabase::QuerySync)
     if (BindParameters(params, stmt)) {
         while ((status = sqlite3_step(stmt)) == SQLITE_ROW) {
             Local<Object> obj(GetRow(stmt));
-            result->Set(Nan::New(n++), obj);
+            Nan::Set(result, Nan::New(n++), obj);
         }
         if (status != SQLITE_DONE) {
             message = string(sqlite3_errmsg(db->_handle));
@@ -746,8 +746,8 @@ NAN_METHOD(SQLiteDatabase::RunSync)
             message = string(sqlite3_errmsg(db->_handle));
         } else {
             status = SQLITE_OK;
-            db->handle()->Set(Nan::New("inserted_oid").ToLocalChecked(), Nan::New((double)sqlite3_last_insert_rowid(db->_handle)));
-            db->handle()->Set(Nan::New("affected_rows").ToLocalChecked(), Nan::New(sqlite3_changes(db->_handle)));
+            Nan::Set(db->handle(), Nan::New("inserted_oid").ToLocalChecked(), Nan::New((double)sqlite3_last_insert_rowid(db->_handle)));
+            Nan::Set(db->handle(), Nan::New("affected_rows").ToLocalChecked(), Nan::New(sqlite3_changes(db->_handle)));
         }
     } else {
         message = string(sqlite3_errmsg(db->_handle));
@@ -827,8 +827,8 @@ void SQLiteDatabase::Work_AfterExec(uv_work_t* req)
     Nan::HandleScope scope;
     Baton* baton = static_cast<Baton*>(req->data);
 
-    baton->db->handle()->Set(Nan::New("inserted_oid").ToLocalChecked(), Nan::New((double)baton->inserted_id));
-    baton->db->handle()->Set(Nan::New("affected_rows").ToLocalChecked(), Nan::New(baton->changes));
+    Nan::Set(baton->db->handle(), Nan::New("inserted_oid").ToLocalChecked(), Nan::New((double)baton->inserted_id));
+    Nan::Set(baton->db->handle(), Nan::New("affected_rows").ToLocalChecked(), Nan::New(baton->changes));
 
     if (!baton->callback.IsEmpty()) {
         Local < Value > argv[1];
@@ -856,7 +856,7 @@ NAN_METHOD(SQLiteDatabase::Copy)
     int rc = SQLITE_OK;
 
     if (info.Length() && info[0]->IsObject()) {
-        SQLiteDatabase* sdb = ObjectWrap::Unwrap < SQLiteDatabase > (info[0]->ToObject());
+        SQLiteDatabase* sdb = Nan::ObjectWrap::Unwrap < SQLiteDatabase > (Nan::To<Object>(info[0]).ToLocalChecked());
         handle2 = sdb->_handle;
     } else
     if (info.Length() && info[0]->IsString()) {
@@ -901,7 +901,7 @@ NAN_METHOD(SQLiteStatement::NewStmt)
     NAN_REQUIRE_ARGUMENT_STRING(1, sql);
     NAN_EXPECT_ARGUMENT_FUNCTION(2, callback);
 
-    SQLiteDatabase* db = ObjectWrap::Unwrap < SQLiteDatabase > (info[0]->ToObject());
+    SQLiteDatabase* db = Nan::ObjectWrap::Unwrap < SQLiteDatabase > (Nan::To<Object>(info[0]).ToLocalChecked());
     SQLiteStatement* stmt = new SQLiteStatement(db, *sql);
     stmt->Wrap(info.This());
     Nan::Set(info.This(), Nan::New("sql").ToLocalChecked(), Nan::New(*sql).ToLocalChecked());
@@ -915,7 +915,7 @@ NAN_METHOD(SQLiteStatement::NewStmt)
 NAN_METHOD(SQLiteStatement::Prepare)
 {
     Nan::HandleScope scope;
-    SQLiteStatement* stmt = ObjectWrap::Unwrap < SQLiteStatement > (info.Holder());
+    SQLiteStatement* stmt = Nan::ObjectWrap::Unwrap < SQLiteStatement > (info.Holder());
 
     NAN_REQUIRE_ARGUMENT_STRING(0, sql);
     NAN_OPTIONAL_ARGUMENT_FUNCTION(-1, callback);
@@ -979,8 +979,8 @@ NAN_METHOD(SQLiteStatement::RunSync)
         if (!(stmt->status == SQLITE_ROW || stmt->status == SQLITE_DONE)) {
             stmt->message = string(sqlite3_errmsg(stmt->db->_handle));
         } else {
-            stmt->handle()->Set(Nan::New("lastID").ToLocalChecked(), Nan::New((double)sqlite3_last_insert_rowid(stmt->db->_handle)));
-            stmt->handle()->Set(Nan::New("changes").ToLocalChecked(), Nan::New((int)sqlite3_changes(stmt->db->_handle)));
+            Nan::Set(stmt->handle(), Nan::New("lastID").ToLocalChecked(), Nan::New((double)sqlite3_last_insert_rowid(stmt->db->_handle)));
+            Nan::Set(stmt->handle(), Nan::New("changes").ToLocalChecked(), Nan::New((int)sqlite3_changes(stmt->db->_handle)));
             stmt->status = SQLITE_OK;
         }
     } else {
@@ -1054,8 +1054,8 @@ void SQLiteStatement::Work_AfterRun(uv_work_t* req)
     Nan::HandleScope scope;
     Baton* baton = static_cast<Baton*>(req->data);
 
-    baton->stmt->handle()->Set(Nan::New("lastID").ToLocalChecked(), Nan::New((double)baton->inserted_id));
-    baton->stmt->handle()->Set(Nan::New("changes").ToLocalChecked(), Nan::New(baton->changes));
+    Nan::Set(baton->stmt->handle(), Nan::New("lastID").ToLocalChecked(), Nan::New((double)baton->inserted_id));
+    Nan::Set(baton->stmt->handle(), Nan::New("changes").ToLocalChecked(), Nan::New(baton->changes));
 
     if (!baton->callback.IsEmpty()) {
         Local < Value > argv[1];
@@ -1090,7 +1090,7 @@ NAN_METHOD(SQLiteStatement::QuerySync)
     if (BindParameters(params, stmt->_handle)) {
         while ((stmt->status = sqlite3_step(stmt->_handle)) == SQLITE_ROW) {
             Local<Object> obj(GetRow(stmt->_handle));
-            result->Set(Nan::New(n++), obj);
+            Nan::Set(result, Nan::New(n++), obj);
         }
         if (stmt->status != SQLITE_DONE) {
             stmt->message = string(sqlite3_errmsg(stmt->db->_handle));
@@ -1161,8 +1161,8 @@ void SQLiteStatement::Work_AfterQuery(uv_work_t* req)
     Nan::HandleScope scope;
     Baton* baton = static_cast<Baton*>(req->data);
 
-    baton->stmt->handle()->Set(Nan::New("lastID").ToLocalChecked(), Nan::New((double)baton->inserted_id));
-    baton->stmt->handle()->Set(Nan::New("changes").ToLocalChecked(), Nan::New(baton->changes));
+    Nan::Set(baton->stmt->handle(), Nan::New("lastID").ToLocalChecked(), Nan::New((double)baton->inserted_id));
+    Nan::Set(baton->stmt->handle(), Nan::New("changes").ToLocalChecked(), Nan::New(baton->changes));
 
     if (!baton->callback.IsEmpty()) {
         Local<Function> cb = Nan::New(baton->callback);
@@ -1174,7 +1174,7 @@ void SQLiteStatement::Work_AfterQuery(uv_work_t* req)
         if (baton->rows.size()) {
             Local<Array> result = Nan::New<Array>(baton->rows.size());
             for (uint i = 0; i < baton->rows.size(); i++) {
-                result->Set(i, RowToJS(baton->rows[i]));
+                Nan::Set(result, i, RowToJS(baton->rows[i]));
             }
             Local<Value> argv[] = { Nan::Null(), result };
             NAN_TRY_CATCH_CALL(baton->stmt->handle(), cb, 2, argv);
