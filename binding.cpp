@@ -251,6 +251,7 @@ NAN_MODULE_INIT(SqliteInit)
 
     NAN_EXPORT(target, stats);
 
+    sqlite3_initialize();
     SQLiteDatabase::Init(target);
     SQLiteStatement::Init(target);
 
