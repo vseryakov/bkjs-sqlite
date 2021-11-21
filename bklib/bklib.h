@@ -193,7 +193,7 @@ string bkStrReplace(const string value, const string search, const string replac
 string bkStrToLower(const string word);
 string bkStrTrim(const string str, const string delim = " \r\n\t");
 string bkStrRtrim(const string str, const string delim = " \r\n\t");
-vector<string> bkStrSplit(const string str, const string delim = " ", const string quotes = string());
+vector<string> bkStrSplit(const string str, const string delim = " ", const string quotes = string(), bool keepempty = false);
 bool bkStrContains(const vector<string> &list, const string key);
 string bkToString(const vector<string> &list, const string delim = " ");
 string bkToString(vector<string> *list, const string delim = " ");
