@@ -512,6 +512,37 @@ uint32_t bkHash2(const uint8_t *buf, int size, uint32_t seed)
     return h1;
 }
 
+uint32_t bkHash3(const uint8_t* buf, int size, uint32_t seed)
+{
+    const uint32_t m = 0xc6a4a793;
+    const uint32_t r = 24;
+    const uint8_t *limit = buf + size;
+    uint32_t h = seed ^ (size * m);
+
+    while (buf + 4 <= limit) {
+        uint32_t w = ((static_cast<uint32_t>(static_cast<unsigned char>(buf[0])))
+                | (static_cast<uint32_t>(static_cast<unsigned char>(buf[1])) << 8)
+                | (static_cast<uint32_t>(static_cast<unsigned char>(buf[2])) << 16)
+                | (static_cast<uint32_t>(static_cast<unsigned char>(buf[3])) << 24));
+        buf += 4;
+        h += w;
+        h *= m;
+        h ^= (h >> 16);
+    }
+    switch (limit - buf) {
+    case 3:
+        h += buf[2] << 16;
+    case 2:
+        h += buf[1] << 8;
+    case 1:
+        h += buf[0];
+        h *= m;
+        h ^= (h >> r);
+        break;
+    }
+    return h;
+}
+
 long long bkClock()
 {
     struct timeval tv;
@@ -726,17 +757,26 @@ bool bkStrEqual(const string &a, const string &b)
     return true;
 }
 
-vector<string> bkStrSplit(const string str, const string delim, const string quotes)
+vector<string> bkStrSplit(const string str, const string delim, const string quotes, bool keepempty)
 {
     vector<string> rc;
-    string::size_type i = 0, j = 0, q = string::npos;
+    string::size_type i = 0, j, q;
     const string::size_type len = str.length();
 
     while (i < len) {
-        i = str.find_first_not_of(delim, i);
+        q = string::npos;
+        if (keepempty) {
+            while (i < len && delim.find(str[i]) != string::npos) {
+                rc.push_back("");
+                i++;
+            }
+            if (i >= len) i = string::npos;
+        } else {
+            i = str.find_first_not_of(delim, i);
+        }
         if (i == string::npos) break;
         // Opening quote
-        if (i && quotes.find(str[i]) != string::npos) {
+        if (quotes.find(str[i]) != string::npos) {
             q = ++i;
             while (q < len) {
                 q = str.find_first_of(quotes, q);
@@ -744,17 +784,23 @@ vector<string> bkStrSplit(const string str, const string delim, const string quo
                 if (q == string::npos || str[q - 1] != '\\') break;
                 q++;
             }
+            if (q != string::npos) {
+                if (keepempty || q - i > 0) rc.push_back(str.substr(i, q - i));
+                j = str.find_first_of(delim, q);
+                if (j == string::npos) break;
+                i = j + 1;
+                continue;
+            }
         }
         // End of the word
         j = str.find_first_of(delim, i);
         if (j == string::npos) {
-            rc.push_back(str.substr(i, q != string::npos ? q - i : str.size() - i));
+            if (keepempty || len - i > 0) rc.push_back(str.substr(i, len - i));
             break;
         } else {
-            rc.push_back(str.substr(i, q != string::npos ? q - i : j - i));
+            if (keepempty || j - i > 0) rc.push_back(str.substr(i, j - i));
         }
-        i = q != string::npos ? q + 1 : j + 1;
-        q = string::npos;
+        i = j + 1;
     }
     return rc;
 }
@@ -1033,13 +1079,13 @@ bkJsonValue *bkJsonParse(const char *source, int size, string *errmsg)
     return root;
 }
 
-void jsonFree(bkJsonValue *root)
+void bkJsonFree(bkJsonValue *root)
 {
     if (!root) return;
     switch(root->type) {
     case JSON_OBJECT:
     case JSON_ARRAY:
-        for (bkJsonValue *it = root->first; it; it = it->next) jsonFree(it);
+        for (bkJsonValue *it = root->first; it; it = it->next) bkJsonFree(it);
 
     default:
         delete root;
@@ -1171,7 +1217,7 @@ bool bkJsonSet(bkJsonValue *root, bkJsonValue *val)
         bkJsonAppend(root, val);
     } else {
         old->value = val->value;
-        jsonFree(val);
+        bkJsonFree(val);
     }
     return true;
 }
@@ -1443,3 +1489,4 @@ vector< vector<string> > bkGeoHashGrid(string center, int steps)
     }
     return rc;
 }
+
