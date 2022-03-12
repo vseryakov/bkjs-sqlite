@@ -1,13 +1,54 @@
 //
 //  Author: Vlad Seryakov vseryakov@gmail.com
-//  April 2013
+//  March 2022
 //
 
-#include "bkjs.h"
-#include "bksqlite.h"
+#include <node.h>
+#include <node_object_wrap.h>
+#include <node_buffer.h>
+#include <node_version.h>
+#include <v8.h>
+#include <v8-profiler.h>
+#include <uv.h>
+#include <nan.h>
+#include "sqlite3.h"
+
+#include <algorithm>
+#include <vector>
+#include <string>
+#include <map>
+
+#ifdef _MSC_VER
+#define strcasecmp _stricmp
+#else
+#include <unistd.h>
+#endif
+
+using namespace node;
+using namespace v8;
+using namespace std;
+
+#define NAN_RETURN(x) info.GetReturnValue().Set(x)
+
+#define NAN_REQUIRE_ARGUMENT(i) if (info.Length() <= i || info[i]->IsUndefined()) {Nan::ThrowError("Argument " #i " is required");return;}
+#define NAN_REQUIRE_ARGUMENT_STRING(i, var) if (info.Length() <= (i) || !info[i]->IsString()) {Nan::ThrowError("Argument " #i " must be a string"); return;} Nan::Utf8String var(Nan::To<v8::String>(info[i]).ToLocalChecked());
+
+#define NAN_EXPECT_ARGUMENT_FUNCTION(i, var) Local<Function> var; \
+        if (info.Length() > 0 && info.Length() > (i) && !info[(i) >= 0 ? (i) : info.Length() - 1]->IsUndefined()) { \
+            if (!info[(i) >= 0 ? (i) : info.Length() - 1]->IsFunction()) {Nan::ThrowError("Argument " #i " must be a function"); return;} \
+            var = Local<Function>::Cast(info[(i) >= 0 ? (i) : info.Length() - 1]); }
+
+#define NAN_OPTIONAL_ARGUMENT_FUNCTION(i, var) Local<Function> var; \
+        if (info.Length() > 0 && info.Length() > (i) && info[(i) >= 0 ? (i) : info.Length() - 1]->IsFunction()) \
+        var = Local<Function>::Cast(info[(i) >= 0 ? (i) : info.Length() - 1]);
+
+#define NAN_TRY_CATCH_CALL(context, callback, argc, argv) { Nan::TryCatch try_catch; Nan::Call((callback), (context), (argc), (argv)); if (try_catch.HasCaught()) FatalException(try_catch); }
+
+#define NAN_DEFINE_CONSTANT_INTEGER(target, constant, name) Nan::DefineOwnProperty(target, Nan::New(#name).ToLocalChecked(), Nan::New(constant),static_cast<PropertyAttribute>(ReadOnly | DontDelete) );
+#define NAN_DEFINE_CONSTANT_STRING(target, constant, name) Nan::DefineOwnProperty(target, Nan::New(#name).ToLocalChecked(), Nan::New(constant).ToLocalChecked(),static_cast<PropertyAttribute>(ReadOnly | DontDelete));
 
 #define EXCEPTION(msg, errno, name) \
-        Local<Value> name = Exception::Error(Nan::New(bkFmtStr("%d: %s", errno, msg)).ToLocalChecked()); \
+        Local<Value> name = Exception::Error(Nan::New(msg).ToLocalChecked()); \
         Local<Object> name ##_obj = Nan::To<Object>(name).ToLocalChecked(); \
         Nan::Set(name ##_obj, Nan::New("errno").ToLocalChecked(), Nan::New(errno)); \
         Nan::Set(name ##_obj, Nan::New("code").ToLocalChecked(), Nan::New(sqlite_code_string(errno)).ToLocalChecked());
@@ -21,6 +62,10 @@ struct SQLiteField {
     double nvalue;
     string svalue;
 };
+
+static bool sqliteInitDb(sqlite3 *handle);
+static int sqlitePrepare(sqlite3 *db, sqlite3_stmt **stmt, string sql, int count = 1, int timeout = 100);
+static int sqliteStep(sqlite3_stmt *stmt, int count = 1, int timeout = 100);
 
 typedef vector<SQLiteField> Row;
 class SQLiteStatement;
@@ -183,14 +228,13 @@ public:
     }
 
     void Finalize(void) {
-        LogDev("%s", sql.c_str());
         if (_handle) sqlite3_finalize(_handle);
         _handle = NULL;
     }
 
     bool Prepare() {
         _handle = NULL;
-        status = bkSqlitePrepare(db->_handle, &_handle, sql, db->retries, db->timeout);
+        status = sqlitePrepare(db->_handle, &_handle, sql, db->retries, db->timeout);
         if (status != SQLITE_OK) {
             message = string(sqlite3_errmsg(db->_handle));
             if (_handle) sqlite3_finalize(_handle);
@@ -252,6 +296,8 @@ NAN_MODULE_INIT(SqliteInit)
     NAN_EXPORT(target, stats);
 
     sqlite3_initialize();
+    sqlite3_enable_shared_cache(1);
+
     SQLiteDatabase::Init(target);
     SQLiteStatement::Init(target);
 
@@ -589,7 +635,7 @@ NAN_METHOD(SQLiteDatabase::NewDB)
             db->_handle = NULL;
             Nan::ThrowError(sqlite3_errmsg(db->_handle));
         }
-        bkSqliteInitDb(db->_handle, NULL);
+        sqliteInitDb(db->_handle);
     }
     NAN_RETURN(info.This());
 }
@@ -604,7 +650,7 @@ void SQLiteDatabase::Work_Open(uv_work_t* req)
         sqlite3_close(baton->db->_handle);
         baton->db->_handle = NULL;
     } else {
-        bkSqliteInitDb(baton->db->_handle, NULL);
+        sqliteInitDb(baton->db->_handle);
     }
 }
 
@@ -625,7 +671,7 @@ void SQLiteDatabase::Work_AfterOpen(uv_work_t* req)
         NAN_TRY_CATCH_CALL(baton->db->handle(), cb, 1, argv);
     } else
     if (baton->status != SQLITE_OK) {
-        LogError("%s", baton->message.c_str());
+        printf("%s", baton->message.c_str());
     }
     delete baton;
 }
@@ -684,7 +730,7 @@ void SQLiteDatabase::Work_AfterClose(uv_work_t* req)
         NAN_TRY_CATCH_CALL(Nan::GetCurrentContext()->Global(), cb, 1, argv);
     } else
     if (baton->status != SQLITE_OK) {
-        LogError("%s", baton->message.c_str());
+        printf("%s", baton->message.c_str());
     }
     delete baton;
 }
@@ -815,7 +861,7 @@ void SQLiteDatabase::Work_Exec(uv_work_t* req)
     char* message = NULL;
     baton->status = sqlite3_exec(baton->db->_handle, baton->sparam.c_str(), NULL, NULL, &message);
     if (baton->status != SQLITE_OK) {
-        baton->message = bkFmtStr("sqlite3 error %d: %s", baton->status, message ? message : sqlite3_errmsg(baton->db->_handle));
+        baton->message = message ? message : sqlite3_errmsg(baton->db->_handle);
         sqlite3_free(message);
     } else {
         baton->inserted_id = sqlite3_last_insert_rowid(baton->db->_handle);
@@ -843,7 +889,7 @@ void SQLiteDatabase::Work_AfterExec(uv_work_t* req)
         NAN_TRY_CATCH_CALL(baton->db->handle(), cb, 1, argv);
     } else
     if (baton->status != SQLITE_OK) {
-        LogError("%s", baton->message.c_str());
+        printf("%s", baton->message.c_str());
     }
     delete baton;
 }
@@ -952,7 +998,7 @@ void SQLiteStatement::Work_AfterPrepare(uv_work_t* req)
         NAN_TRY_CATCH_CALL(baton->stmt->handle(), cb, 1, argv);
     } else
     if (baton->stmt->status != SQLITE_OK) {
-        LogError("%s", baton->stmt->message.c_str());
+        printf("%s", baton->stmt->message.c_str());
     }
     delete baton;
 }
@@ -1014,7 +1060,7 @@ void SQLiteStatement::Work_Run(uv_work_t* req)
     Baton* baton = static_cast<Baton*>(req->data);
 
     if (BindParameters(baton->params, baton->stmt->_handle)) {
-        baton->stmt->status = bkSqliteStep(baton->stmt->_handle, baton->stmt->db->retries, baton->stmt->db->timeout);
+        baton->stmt->status = sqliteStep(baton->stmt->_handle, baton->stmt->db->retries, baton->stmt->db->timeout);
 
         if (!(baton->stmt->status == SQLITE_ROW || baton->stmt->status == SQLITE_DONE)) {
             baton->stmt->message = string(sqlite3_errmsg(baton->stmt->db->_handle));
@@ -1035,7 +1081,7 @@ void SQLiteStatement::Work_RunPrepare(uv_work_t* req)
     if (!baton->stmt->Prepare()) return;
 
     if (BindParameters(baton->params, baton->stmt->_handle)) {
-        baton->stmt->status = bkSqliteStep(baton->stmt->_handle, baton->stmt->db->retries, baton->stmt->db->timeout);
+        baton->stmt->status = sqliteStep(baton->stmt->_handle, baton->stmt->db->retries, baton->stmt->db->timeout);
 
         if (!(baton->stmt->status == SQLITE_ROW || baton->stmt->status == SQLITE_DONE)) {
             baton->stmt->message = string(sqlite3_errmsg(baton->stmt->db->_handle));
@@ -1070,7 +1116,7 @@ void SQLiteStatement::Work_AfterRun(uv_work_t* req)
         NAN_TRY_CATCH_CALL(baton->stmt->handle(), cb, 1, argv);
     } else
     if (baton->stmt->status != SQLITE_OK) {
-        LogError("%s", baton->stmt->message.c_str());
+        printf("%s", baton->stmt->message.c_str());
     }
     delete baton;
 }
@@ -1123,7 +1169,7 @@ void SQLiteStatement::Work_Query(uv_work_t* req)
     Baton* baton = static_cast<Baton*>(req->data);
 
     if (BindParameters(baton->params, baton->stmt->_handle)) {
-        while ((baton->stmt->status = bkSqliteStep(baton->stmt->_handle, baton->stmt->db->retries, baton->stmt->db->timeout)) == SQLITE_ROW) {
+        while ((baton->stmt->status = sqliteStep(baton->stmt->_handle, baton->stmt->db->retries, baton->stmt->db->timeout)) == SQLITE_ROW) {
             Row row;
             GetRow(row, baton->stmt->_handle);
             baton->rows.push_back(row);
@@ -1143,7 +1189,7 @@ void SQLiteStatement::Work_QueryPrepare(uv_work_t* req)
     if (!baton->stmt->Prepare()) return;
 
     if (BindParameters(baton->params, baton->stmt->_handle)) {
-        while ((baton->stmt->status = bkSqliteStep(baton->stmt->_handle, baton->stmt->db->retries, baton->stmt->db->timeout)) == SQLITE_ROW) {
+        while ((baton->stmt->status = sqliteStep(baton->stmt->_handle, baton->stmt->db->retries, baton->stmt->db->timeout)) == SQLITE_ROW) {
             Row row;
             GetRow(row, baton->stmt->_handle);
             baton->rows.push_back(row);
@@ -1185,8 +1231,127 @@ void SQLiteStatement::Work_AfterQuery(uv_work_t* req)
         }
     } else
     if (baton->stmt->status != SQLITE_DONE) {
-        LogError("%s", baton->stmt->message.c_str());
+        printf("%s", baton->stmt->message.c_str());
     }
     delete baton;
 }
 
+#ifdef _MSC_VER
+static void usleep(int waitTime)
+{
+    __int64 time1 = 0, time2 = 0, freq = 0;
+
+    QueryPerformanceCounter((LARGE_INTEGER *) &time1);
+    QueryPerformanceFrequency((LARGE_INTEGER *)&freq);
+    do { QueryPerformanceCounter((LARGE_INTEGER *) &time2); } while((time2-time1) < waitTime);
+}
+#endif
+
+static int busy(void *ptr, int code)
+{
+    return 1;
+}
+
+static void setTimeout(sqlite3 *handle, int timeout)
+{
+    if (timeout >= 0) {
+        sqlite3_busy_timeout(handle, timeout);
+    } else {
+        sqlite3_busy_handler(handle, busy, NULL);
+    }
+}
+
+// Set or reset busy timeout or handler, -1 set indefinite busy handler otherwise timeout is set
+static void sqliteTimeout(sqlite3_context *ctx, int argc, sqlite3_value **argv)
+{
+    setTimeout(sqlite3_context_db_handle(ctx), argc > 0 ? sqlite3_value_int(argv[0]) : -1);
+}
+
+// Implementation of string concatenation function
+struct ConcatCtx {
+    int len;
+    int count;
+    char *data;
+    char *close;
+};
+
+static void sqliteConcat(ConcatCtx *p, const char *data, int len)
+{
+    if (data) {
+        p->data = (char*)realloc(p->data, p->len + len + 1);
+        p->data[p->len] = 0;
+        strncat(p->data, data, len);
+        p->len += len;
+    }
+
+}
+static void sqliteConcatStep(sqlite3_context* ctx, int argc, sqlite3_value**argv)
+{
+    ConcatCtx *p = (ConcatCtx *) sqlite3_aggregate_context(ctx, sizeof(*p));
+    const char *txt = (const char*)sqlite3_value_text(argv[0]);
+    const char *sep = (const char*)sqlite3_value_text(argv[1]);
+    if (!txt) return;
+    if (argc > 3) {
+        const char *open = (const char*)sqlite3_value_text(argv[2]);
+        const char *close = (const char*)sqlite3_value_text(argv[3]);
+        if (!p->close && close) p->close = strdup(close);
+        if (!p->data && open) sqliteConcat(p, open, strlen(open));
+    }
+    if (p->count && sep) sqliteConcat(p, sep, strlen(sep));
+    sqliteConcat(p, txt, strlen(txt));
+    p->count++;
+}
+
+static void sqliteConcatFinal(sqlite3_context* ctx)
+{
+    ConcatCtx *p = (ConcatCtx *) sqlite3_aggregate_context(ctx, 0);
+    if (p && p->data) {
+        if (p->close) {
+            sqliteConcat(p, p->close, strlen(p->close));
+            free(p->close);
+        }
+        sqlite3_result_text(ctx, p->data, p->len, free);
+    } else {
+        sqlite3_result_text(ctx, "", 0, SQLITE_STATIC);
+    }
+}
+
+static bool sqliteInitDb(sqlite3 *handle)
+{
+    if (!handle) return false;
+    sqlite3_create_function(handle, "concat", -1, SQLITE_UTF8, 0, NULL, sqliteConcatStep, sqliteConcatFinal);
+    sqlite3_create_function(handle, "busy_timeout", 1, SQLITE_UTF8, 0, sqliteTimeout, 0, 0);
+
+    return true;
+}
+
+static int sqlitePrepare(sqlite3 *db, sqlite3_stmt **stmt, string sql, int count, int timeout)
+{
+    int n = 0, rc;
+    do {
+        rc = sqlite3_prepare_v2(db, sql.c_str(), -1, stmt, 0);
+        if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED) {
+            n++;
+            usleep(timeout);
+        }
+    } while (n < count && (rc == SQLITE_BUSY || rc == SQLITE_LOCKED));
+    return rc;
+}
+
+static int sqliteStep(sqlite3_stmt *stmt, int count, int timeout)
+{
+    int n = 0, rc;
+    do {
+        rc = sqlite3_step(stmt);
+        if (rc == SQLITE_LOCKED) {
+            rc = sqlite3_reset(stmt);
+            n++;
+            usleep(timeout);
+        } else
+        if (rc == SQLITE_BUSY) {
+            usleep(timeout);
+            n++;
+        }
+    } while(n < count && (rc == SQLITE_BUSY || rc == SQLITE_LOCKED));
+    return rc;
+}

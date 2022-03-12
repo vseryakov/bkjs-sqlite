@@ -1,5 +1,5 @@
 {
-  "version": "0.2.9",
+  "version": "0.3.0",
   "author": "Vlad Seryakov",
   "name": "bkjs-sqlite",
   "description": "Sqlite support for node.js and backendjs",
@@ -13,7 +13,7 @@
     "nan": ">= 2.14.0"
   },
   "engines": {
-    "node": ">= 10.0"
+    "node": ">= 14.0"
   },
   "license": "BSD-3-Clause",
   "gypfile": true,

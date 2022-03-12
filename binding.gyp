@@ -30,7 +30,6 @@
         "HAVE_INTTYPES_H=1",
         "HAVE_STDINT_H=1",
         "HAVE_USLEEP=1",
-        "HAVE_LOCALTIME_R=1",
         "HAVE_GMTIME_R=1",
         "HAVE_STRERROR_R=1",
         "HAVE_READLINE=1",
@@ -53,15 +52,23 @@
       "target_name": "binding",
       "sources": [
         "binding.cpp",
-        "bklib/bksqlite.cpp",
-        "bklib/bkregexp.cpp",
-        "bklib/bklib.cpp",
         "sqlite/sqlite3.c",
       ],
       "conditions": [
+        ['OS=="win"', {
+          "msvs_settings": {
+            "VCCLCompilerTool": {
+              "ExceptionHandling": 1
+            }
+          },
+          'defines': [
+            'uint=unsigned int',
+          ]
+        }],
         [ 'OS=="mac"', {
           "defines": [
             "OS_MACOSX",
+            "HAVE_LOCALTIME_R=1",
           ],
           "xcode_settings": {
             "OTHER_CFLAGS": [
@@ -72,6 +79,7 @@
         [ 'OS=="linux"', {
           "defines": [
             "OS_LINUX",
+            "HAVE_LOCALTIME_R=1",
           ],
           "cflags_cc+": [
             "-g -fPIC -rdynamic",
